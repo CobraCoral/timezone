@@ -1,14 +1,44 @@
 #!/usr/bin/env python3.8
 """Timezone bot for Legends discord bot."""
 from datetime import datetime
-from typing import Optional1
-# import pytz
+from dateutil.parser import parse # pip install python-dateutil
+from tzlocal import get_localzone # pip install tzlocal
+from time import tzname
+from typing import Optional
 from pytz import common_timezones
 from pytz import country_timezones
+from pytz import timezone
+import pytz
+import time
 import discord
 from redbot.core import Config, commands, checks
 
-
+def get_time_data(tz, timestamp: Optional[str] = None):
+    """Given a Timezone, returns a tuple (tz, time, fmt) on success.
+    Usage: get_time_data(<timezone>, [timestamp]). If you give a timestamp
+    (e.g. 2020-05-06-13:33) it will set the time to that value, instead of now.
+    """
+    if not tz:
+        now = datetime.utcfromtimestamp(time.time()).replace(tzinfo=pytz.utc).astimezone(get_localzone())
+        fmt = "Current system time: **%H:%M** %d-%B-%Y"
+        return (get_localzone(), now, fmt)
+    if "'" in tz:
+        tz = tz.replace("'", "")
+    if len(tz) > 4 and "/" not in tz:
+        raise ValueError("""
+Error: Incorrect format. Use:
+**Continent/City** with correct capitals.  e.g. `America/New_York`
+See the full list of supported timezones here:
+<https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>""")
+    tz = tz.title() if '/' in tz else tz.upper()
+    if tz not in common_timezones:
+        raise KeyError(tz)
+    fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
+    if timestamp:
+        now = pytz.timezone(tz).localize( parse(timestamp) )
+    else:
+        now = datetime.now(timezone(tz))
+    return (timezone(tz), now, fmt)
 class Timezone(commands.Cog):
     """Gets times across the world..."""
 
@@ -17,6 +47,12 @@ class Timezone(commands.Cog):
         self.config = Config.get_conf(self, 278049241001, force_registration=True)
         default_user = {"usertime": None}
         self.config.register_user(**default_user)
+
+        """Format:  'events' : { 'id':[name, (event_tz, event_time, event_fmt)] }"""
+        default_guild = {
+            'events': {}
+        }
+        self.config.register_guild(**default_guild)
 
     @commands.guild_only()
     @commands.group()
@@ -33,27 +69,11 @@ class Timezone(commands.Cog):
     async def tz(self, ctx, *, tz: Optional[str] = None):
         """Gets the time in any timezone."""
         try:
-            if tz is None:
-                time = datetime.now()
-                fmt = "**%H:%M** %d-%B-%Y"
-                await ctx.send(f"Current system time: {time.strftime(fmt)}")
-            else:
-                if "'" in tz:
-                    tz = tz.replace("'", "")
-                if len(tz) > 4 and "/" not in tz:
-                    await ctx.send(
-                        "Error: Incorrect format. Use:\n **Continent/City** with correct capitals. "
-                        "e.g. `America/New_York`\n See the full list of supported timezones here:\n "
-                        "<https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>"
-                    )
-                else:
-                    tz = tz.title() if '/' in tz else tz.upper()
-                    if tz not in common_timezones:
-                        raise Exception(tz)
-                    fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
-                    time = datetime.now(pytz.timezone(tz))
-                    await ctx.send(time.strftime(fmt))
-        except Exception as e:
+            tz, time, fmt = get_time_data(tz)
+            await ctx.send(time.strftime(fmt))
+        except ValueError as e:
+            await ctx.send(str(e))
+        except KeyError as e:
             await ctx.send(f"**Error:** {str(e)} is an unsupported timezone.")
 
     @time.command()
@@ -90,7 +110,7 @@ class Timezone(commands.Cog):
                     "see <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>"
                 )
             else:
-                time = datetime.now(pytz.timezone(usertime))
+                time = datetime.now(timezone(usertime))
                 time = time.strftime("**%H:%M** %d-%B-%Y **%Z (UTC %z)**")
                 msg = f"Your current timezone is **{usertime}.**\n" f"The current time is: {time}"
                 await ctx.send(msg)
@@ -106,6 +126,89 @@ class Timezone(commands.Cog):
                     f"**Error:** Unrecognized timezone. Try `{ctx.prefix}time me Continent/City`: "
                     "see <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>"
                 )
+
+    @time.command()
+    async def tell(self, ctx, tz_to = None, tz_from: Optional[str] = None, *, timestamp: Optional[str] = None):
+        """Tells you what the time will be in the given timezone.
+           If you don't give a origin TZ, it expects to use one that was saved by the 'me' command.
+           Timezone to convert to is mandatory.
+           All timezones need to be in the timezone format as returned by the 'iso' command.
+            Arguments: <timezone_TO> [timezone_FROM] [time]
+            Usage: [p]time tell <Continent/City> [Continent/City] [time]
+            Example: [p]time tell America/New_York Asia/Kolkata '2020-05-06-23:59'"""
+        try:
+            if not tz_to:
+                await ctx.send("timezone_TO timezone is not set. You must provide a valid time_zone to convert your time to in the format <Continent/City> (e.g. America/New_York, or Asia/Kolkata, or Asia/Singapore, or Europe/Paris, etc)!")
+                return
+            tz_from, now_from, fmt_from = get_time_data(tz_from, timestamp)
+            tz_to, now_to, fmt_to = get_time_data(tz_to)
+            await ctx.send(now_from.astimezone(tz_to).strftime(fmt_to))
+        except ValueError as e:
+            await ctx.send(str(e))
+        except KeyError as e:
+            await ctx.send(f"**Error:** {str(e)} is an unsupported timezone.")
+
+    @time.command()
+    async def show_events(self, ctx, event=None, when=None, tz: Optional[str]=None):
+        """Lists all registered events."""
+        events = await self.config.guild(ctx.guild).events.get_raw()
+        output = []
+        for id, event in events.items():
+            # events[event_id] = {'event': event, 'when': event_time.astimezone(pytz.utc).isoformat(), 'tz':str(event_tz)}
+            # to convert back from UTC string: dateutils.parse(events['when']).astimezone(timezone(events[event_id]['tz']))
+            event_name = event['event']
+            event_tz = event['tz']
+            event_time = parse(event['when']).astimezone(timezone(event_tz))
+            fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
+            output.append("Event ID [**{}**] : Event Name [**{}**] : Event Time [{}] : Event TZ [**{}**]".format(id, event_name, event_time.strftime(fmt), event_tz))
+        if not output:
+            output.append(" ** NO EVENTS ** ")
+        await ctx.send("Events\n\n{}".format('\n'.join(output)))
+
+    @time.command()
+    async def remove_event(self, ctx, event_id):
+        """Erases an event if the given ID is found."""
+        try:
+            events = await self.config.guild(ctx.guild).events.get_raw()
+            if event_id not in events.keys():
+                raise KeyError(event_id)
+            removed_event = str(events[event_id])
+            events.__delitem__(event_id)
+            await self.config.guild(ctx.guild).events.set(events)
+            await ctx.send('Removed event [{}]'.format(removed_event))
+        except KeyError as e:
+            await ctx.send(f"**Error:** Event ID {str(e)} does not exist. Use '[p]time event_print' to see all registered events.")
+
+    @time.command()
+    async def add_event(self, ctx, event=None, when=None, tz: Optional[str]=None):
+        """
+            Creates an event in your timezone, or in a given timezone.
+            Usage: [p]time add_event <name> <date/time> [Continent/City]
+            Example: [p]time add_event "June Tournament" 2020-06-01-14:00
+                    (will use the local timezone of the server)
+            Example: [p]time add_event "June Tournament" 2020-06-01-14:00 America/New_York
+                    (will force the event timezone to be EST)
+        """
+        if tz:
+            event_tz, event_time, event_fmt = get_time_data(tz, when)
+            #print('[{}], [{}], [{}] --> {}'.format(event_tz, event_time, event_fmt, event_time.strftime(event_fmt)))
+        #print('[{}], [{}], [{}]'.format(event, when, tz))
+        events = await self.config.guild(ctx.guild).events.get_raw()
+        last_id = sorted(events.keys())
+        event_id = 1
+        if last_id:
+            event_id = int(last_id[-1]) + 1
+        # datetime is not JSON serializable, so we need to store the isoformat representation
+        events[event_id] = {'event': event, 'when': event_time.astimezone(pytz.utc).isoformat(), 'tz':str(event_tz)}
+        # to convert back from UTC string: dateutils.parse(events['when']).astimezone(timezone(events[event_id]['tz']))
+        #print('Adding event: %s'%(events))
+        await self.config.guild(ctx.guild).events.set(events)
+        """
+        events = await self.config.guild(ctx.guild).events()
+        events[event_id] = {'event': event, 'when': (event_tz, event_time, event_fmt)}
+        await self.config.user(ctx.guild).events.set(events)
+        """
+        await ctx.send('Created new event [{}] with ID [{}] happening on [{}]!'.format(event, event_id, event_time.strftime(event_fmt)))
 
     @time.command()
     @checks.admin_or_permissions(manage_guild=True)
@@ -137,7 +240,7 @@ class Timezone(commands.Cog):
         else:
             usertime = await self.config.user(user).usertime()
             if usertime:
-                time = datetime.now(pytz.timezone(usertime))
+                time = datetime.now(timezone(usertime))
                 fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
                 time = time.strftime(fmt)
                 await ctx.send(
@@ -164,9 +267,9 @@ class Timezone(commands.Cog):
         if not othertime:
             return await ctx.send(f"That user's timezone isn't set yet.")
 
-        user_now = datetime.now(pytz.timezone(usertime))
+        user_now = datetime.now(timezone(usertime))
         user_diff = user_now.utcoffset().total_seconds() / 60 / 60
-        other_now = datetime.now(pytz.timezone(othertime))
+        other_now = datetime.now(timezone(othertime))
         other_diff = other_now.utcoffset().total_seconds() / 60 / 60
         time_diff = int(abs(user_diff - other_diff))
         fmt = "**%H:%M %Z (UTC %z)**"
