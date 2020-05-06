@@ -13,6 +13,20 @@ import time
 import discord
 from redbot.core import Config, commands, checks
 
+def format_time_delta(delta):
+    output = ''
+    days, remainder = divmod(delta.total_seconds(), 60*60*24)
+    if days:
+        output += '{} days, '.format(days)
+    hours, remainder = divmod(remainder, 60*60)
+    if hours:
+        output += '{} hours, '.format(hours)
+    minutes, remainder = divmod(remainder, 60)
+    if minutes:
+        output += '{} minutes, '.format(minutes)
+    output += '{} seconds left...'.format(int(remainder))
+    return output
+
 async def user_time(user, config):
     """Returns the timezone of the given user, if it was set."""
     if not user:
@@ -165,7 +179,7 @@ class Timezone(commands.Cog):
     @time.command()
     async def events(self, ctx, name=None):
         """Lists all registered events.
-        Usage: [p]time event [name] : Returns how long for event to start, and what time it will be in your timezone
+        Usage: [p]time events [name] : Returns how long for event to start, and what time it will be in your timezone
         """
         # First see if we can get the user's timezone
         try:
@@ -190,7 +204,7 @@ class Timezone(commands.Cog):
                 user_event_time = parse(event['when']).astimezone(timezone(usertime))
                 user_now = datetime.now(timezone(usertime))
                 fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
-                output.append("Event [**{}**] will start @ [**{}**] your time (in [**{}**])".format(event_name, user_event_time.strftime(fmt), event_time - user_now))
+                output.append("Event [**{}**] will start @ [**{}**] your time (**{}**)".format(event_name, user_event_time.strftime(fmt), format_time_delta(event_time - user_now)))
         await ctx.send("Events\n\n{}".format('\n'.join(output)))
 
     @time.command()
