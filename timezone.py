@@ -13,6 +13,20 @@ import time
 import discord
 from redbot.core import Config, commands, checks
 
+async def user_time(user, config):
+    """Returns the timezone of the given user, if it was set."""
+    if not user:
+        raise KeyError("You must give a valid user!")
+    else:
+        usertime = await config.user(user).usertime()
+        if usertime:
+            time = datetime.now(timezone(usertime))
+            fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
+            time_str = time.strftime(fmt)
+            return (usertime, time, time_str)
+        else:
+            raise RuntimeError("That user hasn't set their timezone.")
+
 def get_time_data(tz, timestamp: Optional[str] = None):
     """Given a Timezone, returns a tuple (tz, time, fmt) on success.
     Usage: get_time_data(<timezone>, [timestamp]). If you give a timestamp
@@ -149,6 +163,37 @@ class Timezone(commands.Cog):
             await ctx.send(f"**Error:** {str(e)} is an unsupported timezone.")
 
     @time.command()
+    async def events(self, ctx, name=None):
+        """Lists all registered events.
+        Usage: [p]time event [name] : Returns how long for event to start, and what time it will be in your timezone
+        """
+        # First see if we can get the user's timezone
+        try:
+            usertime, time, time_str = await user_time(ctx.message.author, self.config)
+        except RuntimeError as e:
+            await ctx.send(str(e))
+            return
+        except KeyError as e:
+            await ctx.send(f"**Error:** {str(e)}.")
+            return
+        events = await self.config.guild(ctx.guild).events.get_raw()
+
+        output = []
+        # now go through all events and tell the user how long for the event to start, and what time it will be for him
+        for id, event in events.items():
+            # events[event_id] = {'event': event, 'when': event_time.astimezone(pytz.utc).isoformat(), 'tz':str(event_tz)}
+            # to convert back from UTC string: dateutils.parse(events['when']).astimezone(timezone(events[event_id]['tz']))
+            event_name = event['event']
+            if not name or event_name == name:
+                event_tz = event['tz']
+                event_time = parse(event['when']).astimezone(timezone(event_tz))
+                user_event_time = parse(event['when']).astimezone(timezone(usertime))
+                user_now = datetime.now(timezone(usertime))
+                fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
+                output.append("Event [**{}**] will start @ [**{}**] your time (in [**{}**])".format(event_name, user_event_time.strftime(fmt), event_time - user_now))
+        await ctx.send("Events\n\n{}".format('\n'.join(output)))
+
+    @time.command()
     async def show_events(self, ctx, event=None, when=None, tz: Optional[str]=None):
         """Lists all registered events."""
         events = await self.config.guild(ctx.guild).events.get_raw()
@@ -235,20 +280,14 @@ class Timezone(commands.Cog):
     @time.command()
     async def user(self, ctx, user: discord.Member = None):
         """Shows the current time for user."""
-        if not user:
-            await ctx.send("That isn't a user!")
-        else:
-            usertime = await self.config.user(user).usertime()
-            if usertime:
-                time = datetime.now(timezone(usertime))
-                fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
-                time = time.strftime(fmt)
-                await ctx.send(
-                    f"{user.name}'s current timezone is: **{usertime}**\n"
-                    f"The current time is: {str(time)}"
-                )
-            else:
-                await ctx.send("That user hasn't set their timezone.")
+        try:
+            usertime, time, time_str = await user_time(user, self.config)
+            await ctx.send(f"{user.name}'s current timezone is: **{usertime}**\n"
+                           f"The current time is: {str(time_str)}")
+        except RuntimeError as e:
+            await ctx.send(str(e))
+        except KeyError as e:
+            await ctx.send(f"**Error:** {str(e)}.")
 
     @time.command()
     async def compare(self, ctx, user: discord.Member = None):
