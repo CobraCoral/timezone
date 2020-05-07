@@ -15,6 +15,8 @@ from redbot.core import Config, commands, checks
 
 def format_time_delta(delta):
     """Create a pretty-prettification of datetime.timedelta."""
+    if delta.total_seconds() < 0:
+        return '! EVENT IS OVER !'
     output = ''
     days, remainder = divmod(delta.total_seconds(), 60*60*24)
     if days:
@@ -205,7 +207,8 @@ class Timezone(commands.Cog):
                 user_event_time = parse(event['when']).astimezone(timezone(usertime))
                 user_now = datetime.now(timezone(usertime))
                 fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
-                output.append("Event [**{}**] will start @ [**{}**] your time (**{}**)".format(event_name, user_event_time.strftime(fmt), format_time_delta(event_time - user_now)))
+                time_delta = event_time - user_now
+                output.append("Event [**{}**] will start @ [**{}**] your time (**{}**)".format(event_name, user_event_time.strftime(fmt), format_time_delta(time_delta)))
         await ctx.send("Events\n\n{}".format('\n'.join(output)))
 
     @time.command()
