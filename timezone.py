@@ -1,4 +1,3 @@
-#!/usr/bin/env python3.8
 """Timezone bot for Legends discord bot."""
 from datetime import datetime
 from dateutil.parser import parse # pip install python-dateutil
@@ -12,23 +11,8 @@ import pytz
 import time
 import discord
 from redbot.core import Config, commands, checks
-
-def format_time_delta(delta):
-    """Create a pretty-prettification of datetime.timedelta."""
-    if delta.total_seconds() < 0:
-        return '! EVENT IS OVER !'
-    output = ''
-    days, remainder = divmod(delta.total_seconds(), 60*60*24)
-    if days:
-        output += '{} days, '.format(days)
-    hours, remainder = divmod(remainder, 60*60)
-    if hours:
-        output += '{} hours, '.format(hours)
-    minutes, remainder = divmod(remainder, 60)
-    if minutes:
-        output += '{} minutes, '.format(minutes)
-    output += '{} seconds left...'.format(int(remainder))
-    return output
+from .embeds import events as embed_events, created_event as embed_event_created, removed_event as embed_removed_event, show_events as embed_show_events, compare as embed_compare, iso as embed_iso, me as embed_me, generic_embeds as embed_generic
+from .utils import format_time_delta
 
 async def user_time(user, config):
     """Returns the timezone of the given user, if it was set."""
@@ -50,8 +34,11 @@ def get_time_data(tz, timestamp: Optional[str] = None):
     (e.g. 2020-05-06-13:33) it will set the time to that value, instead of now.
     """
     if not tz:
-        now = datetime.utcfromtimestamp(time.time()).replace(tzinfo=pytz.utc).astimezone(get_localzone())
-        fmt = "Current system time: **%H:%M** %d-%B-%Y"
+        if not timestamp:
+            now = datetime.utcfromtimestamp(time.time()).replace(tzinfo=pytz.utc).astimezone(get_localzone())
+        else:
+            now = get_localzone().localize( parse(timestamp) )
+        fmt = "**%H:%M** %d-%B-%Y"
         return (get_localzone(), now, fmt)
     if "'" in tz:
         tz = tz.replace("'", "")
@@ -70,6 +57,7 @@ See the full list of supported timezones here:
     else:
         now = datetime.now(timezone(tz))
     return (timezone(tz), now, fmt)
+
 class Timezone(commands.Cog):
     """Gets times across the world..."""
 
@@ -101,31 +89,19 @@ class Timezone(commands.Cog):
         """Gets the time in any timezone."""
         try:
             tz, time, fmt = get_time_data(tz)
-            await ctx.send(time.strftime(fmt))
+            await embed_generic(ctx, field="TZ", value=time.strftime(fmt))
         except ValueError as e:
-            await ctx.send(str(e))
+            await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)}")
         except KeyError as e:
-            await ctx.send(f"**Error:** {str(e)} is an unsupported timezone.")
+            await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)} is an unsupported timezone.")
 
     @time.command()
     async def iso(self, ctx, *, code=None):
         """Looks up ISO3166 country codes and gives you a supported timezone."""
         if code is None:
-            await ctx.send("That doesn't look like a country code!")
+            await embed_generic(ctx, field="**ERROR**:", value=f"{code} doesn't look like a country code!")
         else:
-            exist = True if code in country_timezones else False
-            if exist is True:
-                tz = str(country_timezones(code))
-                msg = (
-                    f"Supported timezones for **{code}:**\n{tz[:-1][1:]}"
-                    f"\n**Use** `{ctx.prefix}time tz Continent/City` **to display the current time in that timezone.**"
-                )
-                await ctx.send(msg)
-            else:
-                await ctx.send(
-                    "That code isn't supported. For a full list, see here: "
-                    "<https://en.wikipedia.org/wiki/List_of_ISO_3166_country_codes>"
-                )
+            await embed_iso(ctx, code, country_timezones(code) if code in country_timezones else None)
 
     @time.command()
     async def me(self, ctx, *, tz=None):
@@ -135,28 +111,20 @@ class Timezone(commands.Cog):
         """
         if tz is None:
             usertime = await self.config.user(ctx.message.author).usertime()
-            if not usertime:
-                await ctx.send(
-                    f"You haven't set your timezone. Do `{ctx.prefix}time me Continent/City`: "
-                    "see <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>"
-                )
-            else:
-                time = datetime.now(timezone(usertime))
-                time = time.strftime("**%H:%M** %d-%B-%Y **%Z (UTC %z)**")
-                msg = f"Your current timezone is **{usertime}.**\n" f"The current time is: {time}"
-                await ctx.send(msg)
+            time = None
+            if usertime:
+                time = datetime.now(timezone(usertime)).strftime("**%H:%M** %d-%B-%Y **%Z (UTC %z)**")
+            await embed_me(ctx, usertime, time)
         else:
             exist = True if tz.title() in common_timezones else False
             if exist:
                 if "'" in tz:
                     tz = tz.replace("'", "")
                 await self.config.user(ctx.message.author).usertime.set(tz.title())
-                await ctx.send(f"Successfully set your timezone to **{tz.title()}**.")
+                await embed_generic(ctx, field="Timezone", value=f"Successfully set your timezone to **{tz.title()}**.")
             else:
-                await ctx.send(
-                    f"**Error:** Unrecognized timezone. Try `{ctx.prefix}time me Continent/City`: "
-                    "see <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>"
-                )
+                await embed_generic(ctx, field="Timezone : **ERROR**:", value=f"Unrecognized timezone. Try `{ctx.prefix}time me Continent/City`\n"
+                    "see [Timezones](<https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>)")
 
     @time.command()
     async def tell(self, ctx, tz_to = None, tz_from: Optional[str] = None, *, timestamp: Optional[str] = None):
@@ -169,15 +137,15 @@ class Timezone(commands.Cog):
             Example: [p]time tell America/New_York Asia/Kolkata '2020-05-06-23:59'"""
         try:
             if not tz_to:
-                await ctx.send("timezone_TO timezone is not set. You must provide a valid time_zone to convert your time to in the format <Continent/City> (e.g. America/New_York, or Asia/Kolkata, or Asia/Singapore, or Europe/Paris, etc)!")
-                return
+                return await ctx.send_help()
+                #return await embed_generic(ctx, field="timezone_TO", value="Field timezone_to is not set. You must provide a valid time_zone to convert your time to in the format <Continent/City>\n(e.g. America/New_York, or Asia/Kolkata, or Asia/Singapore, or Europe/Paris, etc)!")
             tz_from, now_from, fmt_from = get_time_data(tz_from, timestamp)
             tz_to, now_to, fmt_to = get_time_data(tz_to)
-            await ctx.send(now_from.astimezone(tz_to).strftime(fmt_to))
+            await embed_generic(ctx, field="TELL", value=now_from.astimezone(tz_to).strftime(fmt_to))
         except ValueError as e:
-            await ctx.send(str(e))
+            await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)}")
         except KeyError as e:
-            await ctx.send(f"**Error:** {str(e)} is an unsupported timezone.")
+            await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)} is an unsupported timezone.")
 
     @time.command()
     async def events(self, ctx, name=None):
@@ -188,74 +156,80 @@ class Timezone(commands.Cog):
         try:
             usertime, time, time_str = await user_time(ctx.message.author, self.config)
         except RuntimeError as e:
-            await ctx.send(str(e))
-            return
+            return await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)}.")
         except KeyError as e:
-            await ctx.send(f"**Error:** {str(e)}.")
-            return
-        events = await self.config.guild(ctx.guild).events.get_raw()
+            return await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)}.")
 
-        output = []
+        # now go through events
+        event_list = []
+        events = await self.config.guild(ctx.guild).events.get_raw()
         # now go through all events and tell the user how long for the event to start, and what time it will be for him
         for id, event in events.items():
             # events[event_id] = {'event': event, 'when': event_time.astimezone(pytz.utc).isoformat(), 'tz':str(event_tz)}
             # to convert back from UTC string: dateutils.parse(events['when']).astimezone(timezone(events[event_id]['tz']))
-            event_name = event['event']
-            if not name or event_name == name:
+            event_name = event['event'].lower()
+            if not name or name in event_name:
                 event_tz = event['tz']
                 event_time = parse(event['when']).astimezone(timezone(event_tz))
                 user_event_time = parse(event['when']).astimezone(timezone(usertime))
                 user_now = datetime.now(timezone(usertime))
                 fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
                 time_delta = event_time - user_now
-                output.append("Event [**{}**] will start @ [**{}**] your time (**{}**)".format(event_name, user_event_time.strftime(fmt), format_time_delta(time_delta)))
-        await ctx.send("Events\n\n{}".format('\n'.join(output)))
+                event_list.append((event_name, user_event_time.strftime(fmt), format_time_delta(time_delta), time_delta))
+        event_list.sort(key=lambda x: x[3], reverse=True)
+        await embed_events(ctx, event_list)
 
     @time.command()
     async def show_events(self, ctx, event=None, when=None, tz: Optional[str]=None):
         """Lists all registered events."""
+        # First see if we can get the user's timezone
+        try:
+            usertime, time, time_str = await user_time(ctx.message.author, self.config)
+        except RuntimeError as e:
+            return await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)}")
+        except KeyError as e:
+            return await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)}")
+
+        # now go through events
+        event_list = []
         events = await self.config.guild(ctx.guild).events.get_raw()
-        output = []
         for id, event in events.items():
             # events[event_id] = {'event': event, 'when': event_time.astimezone(pytz.utc).isoformat(), 'tz':str(event_tz)}
             # to convert back from UTC string: dateutils.parse(events['when']).astimezone(timezone(events[event_id]['tz']))
             event_name = event['event']
             event_tz = event['tz']
             event_time = parse(event['when']).astimezone(timezone(event_tz))
+            user_now = datetime.now(timezone(usertime))
+            time_delta = event_time - user_now
             fmt = "**%H:%M** %d-%B-%Y **%Z (UTC %z)**"
-            output.append("Event ID [**{}**] : Event Name [**{}**] : Event Time [{}] : Event TZ [**{}**]".format(id, event_name, event_time.strftime(fmt), event_tz))
-        if not output:
-            output.append(" ** NO EVENTS ** ")
-        await ctx.send("Events\n\n{}".format('\n'.join(output)))
+            if time_delta.total_seconds() < 0:
+                fmt += " **! EVENT IS OVER !**"
+            event_list.append((id, event_name, event_time.strftime(fmt), event_tz, time_delta))
+        if not event_list:
+            event_list.append((0, " ** NO EVENTS ** ", "", "", 0))
+        event_list.sort(key=lambda x: x[4], reverse=True)
+        await embed_show_events(ctx, event_list)
 
     @time.command()
-    async def remove_event(self, ctx, event_id):
-        """Erases an event if the given ID is found."""
-        try:
-            events = await self.config.guild(ctx.guild).events.get_raw()
-            if event_id not in events.keys():
-                raise KeyError(event_id)
-            removed_event = str(events[event_id])
-            events.__delitem__(event_id)
-            await self.config.guild(ctx.guild).events.set(events)
-            await ctx.send('Removed event [{}]'.format(removed_event))
-        except KeyError as e:
-            await ctx.send(f"**Error:** Event ID {str(e)} does not exist. Use '[p]time event_print' to see all registered events.")
-
-    @time.command()
-    async def add_event(self, ctx, event=None, when=None, tz: Optional[str]=None):
+    async def create_event(self, ctx, event=None, when=None, tz: Optional[str]=None):
         """
             Creates an event in your timezone, or in a given timezone.
-            Usage: [p]time add_event <name> <date/time> [Continent/City]
-            Example: [p]time add_event "June Tournament" 2020-06-01-14:00
+            Usage: [p]time create_event <name> <date/time> [Continent/City]
+            Example: [p]time create_event "June Tournament" 2020-06-01-14:00
                     (will use the local timezone of the server)
-            Example: [p]time add_event "June Tournament" 2020-06-01-14:00 America/New_York
+            Example: [p]time create_event "June Tournament" 2020-06-01-14:00 America/New_York
                     (will force the event timezone to be EST)
         """
-        if tz:
+        if not event:
+            return await ctx.send_help()
+            #return await embed_generic(ctx, field="**ERROR**:", value='You must set an event name (between double quotes "event name" preferably).')
+        if not when:
+            return await ctx.send_help()
+            #return await embed_generic(ctx, field="**ERROR**:", value='You must set an event date/time (between double quotes "YYYY-MM-DD-HH:MM:SS" preferably).')
+        try:
             event_tz, event_time, event_fmt = get_time_data(tz, when)
-            #print('[{}], [{}], [{}] --> {}'.format(event_tz, event_time, event_fmt, event_time.strftime(event_fmt)))
-        #print('[{}], [{}], [{}]'.format(event, when, tz))
+        except KeyError as e:
+            return await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)} is an unsupported timezone.")
         events = await self.config.guild(ctx.guild).events.get_raw()
         last_id = sorted(events.keys())
         event_id = 1
@@ -264,14 +238,21 @@ class Timezone(commands.Cog):
         # datetime is not JSON serializable, so we need to store the isoformat representation
         events[event_id] = {'event': event, 'when': event_time.astimezone(pytz.utc).isoformat(), 'tz':str(event_tz)}
         # to convert back from UTC string: dateutils.parse(events['when']).astimezone(timezone(events[event_id]['tz']))
-        #print('Adding event: %s'%(events))
         await self.config.guild(ctx.guild).events.set(events)
-        """
-        events = await self.config.guild(ctx.guild).events()
-        events[event_id] = {'event': event, 'when': (event_tz, event_time, event_fmt)}
-        await self.config.user(ctx.guild).events.set(events)
-        """
-        await ctx.send('Created new event [{}] with ID [{}] happening on [{}]!'.format(event, event_id, event_time.strftime(event_fmt)))
+        await embed_event_created(ctx, event, event_id, event_time.strftime(event_fmt))
+
+    @time.command()
+    async def remove_event(self, ctx, event_id):
+        """Erases an event if the given ID is found."""
+        try:
+            events = await self.config.guild(ctx.guild).events.get_raw()
+            if event_id not in events.keys():
+                raise KeyError(event_id)
+            await embed_removed_event(ctx, event_id, events[event_id])
+            events.__delitem__(event_id)
+            await self.config.guild(ctx.guild).events.set(events)
+        except KeyError as e:
+            await embed_generic(ctx, field="**ERROR**:", value=f"**Error:** Event ID {str(e)} does not exist. Use '{ctx.prefix}time event_print' to see all registered events.")
 
     @time.command()
     @checks.admin_or_permissions(manage_guild=True)
@@ -280,32 +261,29 @@ class Timezone(commands.Cog):
         if not user:
             user = ctx.message.author
         if tz is None:
-            await ctx.send("That timezone is invalid.")
-            return
+            return await embed_generic(ctx, field="**ERROR**:", value="That timezone is invalid.")
         else:
             exist = True if tz.title() in common_timezones else False
             if exist:
                 if "'" in tz:
                     tz = tz.replace("'", "")
                 await self.config.user(user).usertime.set(tz.title())
-                await ctx.send(f"Successfully set {user.name}'s timezone to **{tz.title()}**.")
+                await embed_generic(ctx, field="**ERROR**:", value=f"Successfully set {user.name}'s timezone to **{tz.title()}**.")
             else:
-                await ctx.send(
-                    f"**Error:** Unrecognized timezone. Try `{ctx.prefix}time set @user Continent/City`: "
-                    "see <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>"
-                )
+                await embed_generic(ctx, field="**ERROR**:", value=f"Unrecognized timezone. Try `{ctx.prefix}time set @user Continent/City`\n"
+                    "see [Timezones](<https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>)")
 
     @time.command()
     async def user(self, ctx, user: discord.Member = None):
         """Shows the current time for user."""
         try:
             usertime, time, time_str = await user_time(user, self.config)
-            await ctx.send(f"{user.name}'s current timezone is: **{usertime}**\n"
+            await embed_generic(ctx, field='User', value=f"{user.name}'s current timezone is: **{usertime}**\n"
                            f"The current time is: {str(time_str)}")
         except RuntimeError as e:
-            await ctx.send(str(e))
+            await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)}")
         except KeyError as e:
-            await ctx.send(f"**Error:** {str(e)}.")
+            await embed_generic(ctx, field="**ERROR**:", value=f"{str(e)}")
 
     @time.command()
     async def compare(self, ctx, user: discord.Member = None):
@@ -317,12 +295,10 @@ class Timezone(commands.Cog):
         othertime = await self.config.user(user).usertime()
 
         if not usertime:
-            return await ctx.send(
-                f"You haven't set your timezone. Do `{ctx.prefix}time me Continent/City`: "
-                "see <https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>"
-            )
+            return await embed_generic(ctx, title='', value=f"You haven't set your timezone. Do `{ctx.prefix}time me Continent/City`\n"
+                "see [Timezones](<https://en.wikipedia.org/wiki/List_of_tz_database_time_zones>)")
         if not othertime:
-            return await ctx.send(f"That user's timezone isn't set yet.")
+            await embed_generic(ctx, field="**ERROR**:", value=f"That user's timezone isn't set yet.")
 
         user_now = datetime.now(timezone(usertime))
         user_diff = user_now.utcoffset().total_seconds() / 60 / 60
@@ -336,6 +312,5 @@ class Timezone(commands.Cog):
         position = "ahead of" if user_diff < other_diff else "behind"
         position_text = "" if time_diff == 0 else f" {position} you"
 
-        await ctx.send(
-            f"{user.display_name}'s time is {other_time} which is {time_amt}{position_text}."
-        )
+        await embed_compare(ctx, user.display_name, other_time, time_amt, position_text)
+
