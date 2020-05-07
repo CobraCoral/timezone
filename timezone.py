@@ -14,6 +14,7 @@ import discord
 from redbot.core import Config, commands, checks
 
 def format_time_delta(delta):
+    """Create a pretty-prettification of datetime.timedelta."""
     output = ''
     days, remainder = divmod(delta.total_seconds(), 60*60*24)
     if days:
